@@ -21,6 +21,10 @@
     #room-id-input {
       padding: 0.5em;
       font-size: 1em;
+      background: #2d2d2d;
+      color: white;
+      border: 1px solid #444;
+      border-radius: 4px;
     }
     #video-grid {
       display: flex;
@@ -82,21 +86,39 @@
     #mic-btn.muted {
       background-color: #EE4B2B;
     }
+    #join-btn {
+      background-color: #4CAF50;
+      color: white;
+    }
+    #leave-btn {
+      background-color: #f44336;
+      color: white;
+    }
+    #permission-warning {
+      color: #ff9800;
+      text-align: center;
+      margin: 10px 0;
+      display: none;
+    }
   </style>
 </head>
 <body>
 
   <div id="controls">
     <input id="room-id-input" placeholder="Enter Room ID" />
-    <button onclick="joinCall()">Join</button>
-    <button onclick="leaveCall()" id="leave-btn" disabled>Leave</button>
+    <button id="join-btn" onclick="joinCall()">Join</button>
+    <button id="leave-btn" onclick="leaveCall()" disabled>Leave</button>
   </div>
 
   <div id="audio-controls">
     <button id="mic-btn" onclick="toggleMic()">Mic On</button>
   </div>
 
-  <div id="status">Not connected</div>
+  <div id="permission-warning">
+    Please allow camera and microphone permissions to join the call
+  </div>
+
+  <div id="status">Ready to join</div>
   <div id="participant-count">Participants: 0</div>
   <div id="video-grid"></div>
   
