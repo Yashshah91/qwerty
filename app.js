@@ -1,13 +1,13 @@
-const APP_ID = "2a25041a57024e289c67c36418eace00";
+const APP_ID = "2a25041a57024e289e67c36418eace00";
 const TOKEN = null;
 const DEFAULT_CHANNEL = "test";
 
+// Gesture recognition variables
 const labelMap = ["1L", "1R", "2L", "2R", "3L", "3R", "4L", "4R", "5R", "6L", "6R", "7L", "7R", "8L", "8R", "9L", "9R", "A", "B", "C", "D", "L"];
 const CONFIDENCE_THRESHOLD = 0.7;
 const PREDICTION_INTERVAL = 500;
 
-const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
-
+// DOM elements
 const videoGrid = document.getElementById("video-grid");
 const participantCount = document.getElementById("participant-count");
 const leaveBtn = document.getElementById("leave-btn");
@@ -15,64 +15,22 @@ const roomIdInput = document.getElementById("room-id-input");
 const status = document.getElementById("status");
 const micBtn = document.getElementById("mic-btn");
 const audioControls = document.getElementById("audio-controls");
+const permissionWarning = document.getElementById("permission-warning");
 
-const remoteGestureSpan = document.getElementById("remote-gesture");
-
+// Agora and WebSocket setup
+const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
 const ws = new WebSocket("wss://skitter-rural-slipper.glitch.me/");
 
-ws.onopen = () => {
-  console.log("✅ WebSocket connected");
-  status.textContent += " | ✅ WebSocket connected";
-};
-
-ws.onerror = (err) => {
-  console.error("❌ WebSocket error:", err);
-  status.textContent += " | ❌ WebSocket error";
-};
-
-ws.onclose = () => {
-  console.warn("🔌 WebSocket disconnected");
-  status.textContent += " | 🔌 WebSocket disconnected";
-};
-
-let gestureTimeout;
-function updateRemoteGestureDisplay(gesture) {
-  if (remoteGestureSpan) remoteGestureSpan.textContent = gesture || "Not received";
-
-  clearTimeout(gestureTimeout);
-  gestureTimeout = setTimeout(() => {
-    remoteGestureSpan.textContent = "Not received";
-  }, 5000);
-}
-
-ws.onmessage = async (event) => {
-  try {
-    let data;
-
-    if (event.data instanceof Blob) {
-      const text = await event.data.text();
-      data = JSON.parse(text);
-    } else {
-      data = JSON.parse(event.data);
-    }
-
-    const { type, gesture, from } = data;
-
-    if (type === "gesture" && from !== localUid) {
-      const label = document.getElementById(`label-remote-${from}`);
-      if (label) label.textContent = `Gesture: ${gesture}`;
-      updateRemoteGestureDisplay(gesture);
-    }
-  } catch (err) {
-    console.warn("WebSocket message parse error:", err);
-  }
-};
-
+// Application state
 let model, localVideoTrack, localAudioTrack, localUid;
 let participants = new Set();
 let lastPredictionTime = 0;
+let mediaStream;
 
-const hands = new Hands({ locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+// MediaPipe Hands setup
+const hands = new Hands({ 
+  locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` 
+});
 hands.setOptions({
   maxNumHands: 2,
   modelComplexity: 1,
@@ -81,55 +39,141 @@ hands.setOptions({
 });
 hands.onResults(onResults);
 
+// WebSocket handlers
+ws.onopen = () => {
+  console.log("✅ WebSocket connected");
+  updateStatus("WebSocket connected");
+};
+
+ws.onerror = (err) => {
+  console.error("❌ WebSocket error:", err);
+  updateStatus("WebSocket error");
+};
+
+ws.onclose = () => {
+  console.warn("🔌 WebSocket disconnected");
+  updateStatus("WebSocket disconnected");
+};
+
+// Helper functions
+function updateStatus(message) {
+  status.textContent = message;
+}
+
+function updateRemoteGestureDisplay(gesture) {
+  const remoteGestureSpan = document.getElementById("remote-gesture");
+  if (remoteGestureSpan) {
+    remoteGestureSpan.textContent = gesture || "Not received";
+    clearTimeout(gestureTimeout);
+    gestureTimeout = setTimeout(() => {
+      remoteGestureSpan.textContent = "Not received";
+    }, 5000);
+  }
+}
+
+// Main call functions
 async function joinCall() {
-  const CHANNEL = roomIdInput.value.trim() || DEFAULT_CHANNEL;
-  status.textContent = "Loading model...";
-  model = await tf.loadLayersModel("landmark_model_tfjs/model.json");
+  try {
+    const CHANNEL = roomIdInput.value.trim() || DEFAULT_CHANNEL;
+    updateStatus("Requesting permissions...");
+    
+    // Check and request permissions
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({ 
+        video: true, 
+        audio: true 
+      });
+      permissionWarning.style.display = "none";
+    } catch (err) {
+      console.error("Permission error:", err);
+      permissionWarning.style.display = "block";
+      updateStatus("Permission denied");
+      return;
+    }
 
-  const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    // Load gesture model (optional)
+    updateStatus("Loading gesture model...");
+    try {
+      model = await tf.loadLayersModel("landmark_model_tfjs/model.json");
+    } catch (err) {
+      console.warn("Gesture model not loaded:", err);
+      model = null;
+    }
 
-  const gestureVideo = document.createElement("video");
-  gestureVideo.srcObject = stream;
-  gestureVideo.muted = true;
-  gestureVideo.playsInline = true;
-  gestureVideo.play();
+    // Setup gesture recognition if model loaded
+    if (model) {
+      const gestureVideo = document.createElement("video");
+      gestureVideo.srcObject = mediaStream;
+      gestureVideo.muted = true;
+      gestureVideo.playsInline = true;
+      await gestureVideo.play();
 
-  const cam = new Camera(gestureVideo, {
-    onFrame: async () => {
-      const now = Date.now();
-      if (now - lastPredictionTime > PREDICTION_INTERVAL) {
-        await hands.send({ image: gestureVideo });
-        lastPredictionTime = now;
-      }
-    },
-    width: 640,
-    height: 480,
-  });
-  cam.start();
+      const cam = new Camera(gestureVideo, {
+        onFrame: async () => {
+          const now = Date.now();
+          if (now - lastPredictionTime > PREDICTION_INTERVAL) {
+            await hands.send({ image: gestureVideo });
+            lastPredictionTime = now;
+          }
+        },
+        width: 640,
+        height: 480,
+      });
+      cam.start();
+    }
 
-  // Create video and audio tracks separately
-  localVideoTrack = await AgoraRTC.createCameraVideoTrack({ videoSource: stream.getVideoTracks()[0] });
-  localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({ microphoneId: stream.getAudioTracks()[0].id });
+    // Create Agora tracks
+    updateStatus("Setting up media tracks...");
+    try {
+      localVideoTrack = await AgoraRTC.createCameraVideoTrack({
+        videoSource: mediaStream.getVideoTracks()[0]
+      });
+      
+      localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack({
+        microphoneId: mediaStream.getAudioTracks()[0].id
+      });
+    } catch (err) {
+      console.error("Track creation failed:", err);
+      updateStatus("Failed to create media tracks");
+      cleanupMedia();
+      return;
+    }
 
-  status.textContent = "Joining call...";
-  localUid = await client.join(APP_ID, CHANNEL, TOKEN, null);
-  await client.publish([localVideoTrack, localAudioTrack]);
+    // Join channel
+    updateStatus("Joining channel...");
+    try {
+      localUid = await client.join(APP_ID, CHANNEL, TOKEN, null);
+      await client.publish([localVideoTrack, localAudioTrack]);
+    } catch (err) {
+      console.error("Join failed:", err);
+      updateStatus("Failed to join channel");
+      cleanupMedia();
+      return;
+    }
 
-  createVideoBox("local", "You");
-  localVideoTrack.play("local");
-  participants.add("local");
-  updateParticipantCount();
-  setupListeners();
+    // Setup UI
+    createVideoBox("local", "You");
+    localVideoTrack.play("local");
+    participants.add("local");
+    updateParticipantCount();
+    setupListeners();
 
-  leaveBtn.disabled = false;
-  roomIdInput.disabled = true;
-  status.textContent = `In call: ${CHANNEL}`;
-  audioControls.style.display = "flex";
+    leaveBtn.disabled = false;
+    roomIdInput.disabled = true;
+    audioControls.style.display = "flex";
+    updateStatus(`In call: ${CHANNEL}`);
+
+  } catch (err) {
+    console.error("Join call failed:", err);
+    updateStatus("Error: " + err.message);
+    cleanupMedia();
+  }
 }
 
 function setupListeners() {
   client.on("user-published", async (user, mediaType) => {
     await client.subscribe(user, mediaType);
+    
     if (mediaType === "video") {
       const id = `remote-${user.uid}`;
       createVideoBox(id, `User ${user.uid}`);
@@ -137,6 +181,7 @@ function setupListeners() {
       participants.add(id);
       updateParticipantCount();
     }
+    
     if (mediaType === "audio") {
       user.audioTrack.play();
     }
@@ -144,16 +189,12 @@ function setupListeners() {
 
   client.on("user-unpublished", user => {
     const id = `remote-${user.uid}`;
-    document.getElementById(`box-${id}`)?.remove();
-    participants.delete(id);
-    updateParticipantCount();
+    removeVideoBox(id);
   });
 
   client.on("user-left", user => {
     const id = `remote-${user.uid}`;
-    document.getElementById(`box-${id}`)?.remove();
-    participants.delete(id);
-    updateParticipantCount();
+    removeVideoBox(id);
   });
 }
 
@@ -183,11 +224,20 @@ function createVideoBox(id, name) {
   videoGrid.appendChild(box);
 }
 
+function removeVideoBox(id) {
+  document.getElementById(`box-${id}`)?.remove();
+  participants.delete(id);
+  updateParticipantCount();
+}
+
 function updateParticipantCount() {
   participantCount.textContent = `Participants: ${participants.size}`;
 }
 
+// Media control functions
 function toggleMic() {
+  if (!localAudioTrack) return;
+  
   if (localAudioTrack.muted) {
     localAudioTrack.setMuted(false);
     micBtn.textContent = "Mic On";
@@ -199,6 +249,40 @@ function toggleMic() {
   }
 }
 
+async function leaveCall() {
+  try {
+    updateStatus("Leaving call...");
+    await client.leave();
+    cleanupMedia();
+    
+    videoGrid.innerHTML = "";
+    participants.clear();
+    updateParticipantCount();
+    
+    leaveBtn.disabled = true;
+    roomIdInput.disabled = false;
+    audioControls.style.display = "none";
+    updateStatus("Ready to join");
+  } catch (err) {
+    console.error("Leave failed:", err);
+    updateStatus("Error leaving call");
+  }
+}
+
+function cleanupMedia() {
+  if (mediaStream) {
+    mediaStream.getTracks().forEach(track => track.stop());
+    mediaStream = null;
+  }
+  localVideoTrack?.stop();
+  localVideoTrack?.close();
+  localAudioTrack?.stop();
+  localAudioTrack?.close();
+  localVideoTrack = null;
+  localAudioTrack = null;
+}
+
+// Gesture recognition functions
 function onResults(results) {
   if (!model) return;
 
@@ -224,10 +308,12 @@ function onResults(results) {
       const maxIdx = data[0].indexOf(maxVal);
       const gesture = maxVal > CONFIDENCE_THRESHOLD ? labelMap[maxIdx] : "None";
 
-      document.getElementById("label-local").textContent = `Gesture: ${gesture}`;
+      const labelElement = document.getElementById("label-local");
+      if (labelElement) labelElement.textContent = `Gesture: ${gesture}`;
       sendGesture(gesture);
-    }).catch(err => console.error("Prediction error:", err))
-    .finally(() => {
+    }).catch(err => {
+      console.error("Prediction error:", err);
+    }).finally(() => {
       input.dispose();
       prediction.dispose();
     });
@@ -242,23 +328,6 @@ function sendGesture(gesture) {
       from: localUid,
     });
     ws.send(msg);
-    console.log(`📤 Sent gesture to WebSocket: ${gesture}`);
+    console.log(`Sent gesture: ${gesture}`);
   }
-}
-
-async function leaveCall() {
-  await client.leave();
-  localVideoTrack?.stop();
-  localVideoTrack?.close();
-  localAudioTrack?.stop();
-  localAudioTrack?.close();
-  videoGrid.innerHTML = "";
-  participants.clear();
-  updateParticipantCount();
-  leaveBtn.disabled = true;
-  roomIdInput.disabled = false;
-  status.textContent = "Left call";
-  audioControls.style.display = "none";
-  micBtn.textContent = "Mic On";
-  micBtn.classList.remove("muted");
 }
